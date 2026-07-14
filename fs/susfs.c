@@ -33,8 +33,8 @@ DEFINE_STATIC_KEY_TRUE(susfs_is_log_enabled);
 #define SUSFS_LOGI(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_info("susfs:[%u][%d][%s] " fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
 #define SUSFS_LOGE(fmt, ...) if (static_branch_likely(&susfs_is_log_enabled)) pr_err("susfs:[%u][%d][%s]" fmt, current_uid().val, current->pid, __func__, ##__VA_ARGS__)
 #else
-#define SUSFS_LOGI(fmt, ...)
-#define SUSFS_LOGE(fmt, ...)
+#define SUSFS_LOGI(fmt, ...) 
+#define SUSFS_LOGE(fmt, ...) 
 #endif
 
 /* sus_path */
@@ -77,7 +77,7 @@ void susfs_add_sus_path(void __user **user_info) {
 		}
 		set_bit(AS_FLAGS_SUS_PATH, &fi->inode.i_mapping->flags);
 		set_bit(AS_FLAGS_SUS_PATH, &inode->i_mapping->flags);
-		SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', fi->nodeid: %llu, fi->inode.i_ino: %lu, fi->inode.i_mapping->flags: 0x%lx\n",
+		SUSFS_LOGI("flagged AS_FLAGS_SUS_PATH on pathname: '%s', fi->nodeid: %llu, fi->inode.i_ino: %lu, fi->inode.i_mapping->flags: 0x%lx\n", 
 					info.target_pathname, fi->nodeid, fi->inode.i_ino, fi->inode.i_mapping->flags);
 		info.err = 0;
 		goto out_path_put_path;
@@ -249,7 +249,7 @@ void susfs_set_hide_sus_mnts_for_non_su_procs(void __user **user_info) {
 		info.err = -EFAULT;
 		goto out_copy_to_user;
 	}
-
+	
 	if (info.enabled) {
 		static_branch_enable(&susfs_is_hide_sus_mnts_for_non_su_procs_enabled);
 	} else {
@@ -311,7 +311,7 @@ static int susfs_mark_inode_sus_kstat(char *target_pathname, struct st_susfs_sus
 	new_entry->target_dev = inode->i_sb->s_dev;
 	SUSFS_LOGI("flagged AS_FLAGS_SUS_KSTAT on pathname: '%s', is_fuse: %d, inode->i_sb->s_dev: %u,  inode->i_ino: %lu, inode->i_mapping->flags: 0x%lx\n",
 				target_pathname, new_entry->is_fuse, inode->i_sb->s_dev, inode->i_ino, inode->i_mapping->flags);
-
+		
 out_path_put_path:
 	path_put(&path);
 	return 0;
@@ -507,7 +507,7 @@ void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *s
 		is_fuse = true;
 		goto out_spoof_kstat;
 	}
-
+	
 	if (!inode->i_mapping) {
 		SUSFS_LOGE("inode->i_mapping is NULL\n");
 		return;
@@ -580,7 +580,7 @@ void susfs_sus_kstat_spoof_show_map_vma(struct inode *inode, dev_t *out_dev, uns
 		is_fuse = true;
 		goto out_spoof_kstat;
 	}
-
+	
 	if (!inode->i_mapping) {
 		SUSFS_LOGE("inode->i_mapping is NULL\n");
 		return;
