@@ -97,6 +97,9 @@ modules.order
 !.gitattributes
 !.gitignore
 !.mailmap
+# GitHub Actions CI (kernel tree ignores all .* by default)
+!.github/
+!.github/**
 
 #
 # Generated include files

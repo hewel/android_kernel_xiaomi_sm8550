@@ -1,0 +1,206 @@
+name: Build Kernel & boot.img
+
+on:
+  push:
+    branches:
+      - lineage-23.2
+      - 'resukisu-*'
+    paths-ignore:
+      - '**.md'
+      - 'Documentation/**'
+  pull_request:
+    branches:
+      - lineage-23.2
+      - 'resukisu-*'
+    paths-ignore:
+      - '**.md'
+      - 'Documentation/**'
+  workflow_dispatch:
+    inputs:
+      device:
+        description: Device codename (must have vendor/<device>_GKI.config)
+        required: true
+        default: socrates
+        type: choice
+        options:
+          - socrates
+          - fuxi
+          - nuwa
+          - vermeer
+      lto:
+        description: LTO mode (full = Lineage-like; thin/none for small runners)
+        required: true
+        default: thin
+        type: choice
+        options:
+          - thin
+          - full
+          - none
+      base_boot_url:
+        description: Optional URL of a stock/Lineage boot.img to repack (leave empty to mkbootimg)
+        required: false
+        default: ''
+      create_release:
+        description: Publish a GitHub Release with artifacts
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: kernel-build-${{ github.workflow }}-${{ github.ref }}-${{ github.event.inputs.device || 'socrates' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  # Match the clang used by the local Lineage-23.2 tree (clang-r563880c).
+  CLANG_VERSION: r563880c
+  DEVICE: ${{ github.event.inputs.device || 'socrates' }}
+  LTO_MODE: ${{ github.event.inputs.lto || 'thin' }}
+  BASE_BOOT_URL: ${{ github.event.inputs.base_boot_url || '' }}
+
+jobs:
+  build:
+    name: Kernel (${{ github.event.inputs.device || 'socrates' }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: false
+
+      - name: Add swap (LTO needs RAM)
+        run: |
+          sudo swapoff -a || true
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+          df -h
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install host packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            bison flex libssl-dev libelf-dev bc cpio \
+            python3 python3-pip curl wget git rsync zstd \
+            build-essential dwarves libncurses-dev
+
+      - name: Cache AOSP clang
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.toolchain/clang
+          key: aosp-clang-${{ env.CLANG_VERSION }}-linux-x86
+
+      - name: Download AOSP clang
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p .toolchain
+          ARCHIVE="clang-${CLANG_VERSION}.tar.gz"
+          # Official AOSP prebuilt archive for this clang revision
+          URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-${CLANG_VERSION}.tar.gz"
+          echo "Downloading ${URL}"
+          curl -fL --retry 5 --retry-delay 5 -o "/tmp/${ARCHIVE}" "$URL"
+          mkdir -p ".toolchain/clang"
+          tar -C ".toolchain/clang" -xzf "/tmp/${ARCHIVE}"
+          # Some archives nest one directory; normalize to .toolchain/clang/bin/clang
+          if [[ ! -x .toolchain/clang/bin/clang ]]; then
+            nested="$(find .toolchain/clang -maxdepth 2 -type f -path '*/bin/clang' | head -1)"
+            if [[ -n "$nested" ]]; then
+              top="$(dirname "$(dirname "$nested")")"
+              shopt -s dotglob
+              tmp=$(mktemp -d)
+              mv "$top"/* "$tmp"/
+              rm -rf .toolchain/clang
+              mkdir -p .toolchain/clang
+              mv "$tmp"/* .toolchain/clang/
+            fi
+          fi
+          test -x .toolchain/clang/bin/clang
+          .toolchain/clang/bin/clang --version | head -1
+
+      - name: Optional magiskboot (for base boot.img repack)
+        if: ${{ env.BASE_BOOT_URL != '' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y --no-install-recommends unzip >/dev/null
+          # Magisk APK embeds magiskboot as libmagiskboot.so
+          TAG=$(curl -fsSL https://api.github.com/repos/topjohnwu/Magisk/releases/latest \
+            | python3 -c 'import sys,json; print(json.load(sys.stdin)["tag_name"])')
+          curl -fL --retry 3 -o /tmp/magisk.apk \
+            "https://github.com/topjohnwu/Magisk/releases/download/${TAG}/Magisk-${TAG}.apk"
+          unzip -o /tmp/magisk.apk 'lib/*/*/libmagiskboot.so' -d /tmp/magisk || \
+            unzip -o /tmp/magisk.apk 'lib/*/libmagiskboot.so' -d /tmp/magisk
+          so="$(find /tmp/magisk -name 'libmagiskboot.so' | head -1)"
+          test -n "$so"
+          sudo install -m0755 "$so" /usr/local/bin/magiskboot
+          magiskboot 2>&1 | head -5 || true
+
+      - name: Build kernel and boot.img
+        env:
+          CLANG_PATH: ${{ github.workspace }}/.toolchain/clang
+          OUT_DIR: ${{ github.workspace }}/out
+          DIST_DIR: ${{ github.workspace }}/dist
+          JOBS: 2
+          BUILD_BOOT_IMG: '1'
+          LOCALVERSION: -resukisu-ci
+        run: |
+          chmod +x .github/scripts/build-kernel.sh
+          .github/scripts/build-kernel.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-${{ env.DEVICE }}-${{ github.sha }}
+          path: |
+            dist/Image
+            dist/boot.img
+            dist/config
+            dist/kernel.release
+            dist/build-info.txt
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Create GitHub Release
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-${{ env.DEVICE }}-${{ github.run_number }}-${{ github.sha }}
+          name: ${{ env.DEVICE }} kernel ${{ github.sha }}
+          body: |
+            Automated kernel build for **${{ env.DEVICE }}** (SM8550 / kalama GKI).
+
+            - Commit: `${{ github.sha }}`
+            - LTO: `${{ env.LTO_MODE }}`
+            - Config: `gki_defconfig` + `vendor/kalama_GKI.config` + `vendor/${{ env.DEVICE }}_GKI.config`
+
+            ### Flash notes
+            - `boot.img` is header v4 GKI-style (kernel only). Prefer `fastboot flash boot boot.img`.
+            - If you supplied a base boot.img URL, the kernel was repacked into that image.
+            - Keep a known-good original boot image before flashing.
+          files: |
+            dist/Image
+            dist/boot.img
+            dist/*.tar.gz
+            dist/build-info.txt
+          generate_release_notes: true
